@@ -154,7 +154,7 @@ class Profile(object):
         if allow_no_subscriptions:
             t_list = [s.tenant_id for s in subscriptions]
             bare_tenants = [t for t in subscription_finder.tenants if t not in t_list]
-            subscriptions = Profile._build_tenant_level_accounts(bare_tenants)
+            subscriptions = cli_ctx.cloud.profile._build_tenant_level_accounts(bare_tenants)
             if not subscriptions:
                 return []
 
@@ -173,7 +173,7 @@ class Profile(object):
         user_id = arm_token_decoded['unique_name'].split('#')[-1]
         subscription_finder = SubscriptionFinder(self.auth_ctx_factory, None)
         subscriptions = subscription_finder.find_from_raw_token(tenant, arm_token)
-        consolidated = Profile._normalize_properties(user_id, subscriptions, is_service_principal=False)
+        consolidated = self._normalize_properties(user_id, subscriptions, is_service_principal=False)
         self._set_subscriptions(consolidated)
 
         # construct token entries to cache
@@ -187,7 +187,7 @@ class Profile(object):
                 'expiresIn': '3600',
                 'expiresOn': str(datetime.utcnow() + timedelta(seconds=3600 * 24)),
                 'userId': t['unique_name'].split('#')[-1],
-                '_authority': CLOUD.endpoints.active_directory.rstrip('/') + '/' + t['tid'],
+                '_authority': self.ctx.cloud.endpoints.active_directory.rstrip('/') + '/' + t['tid'],
                 'resource': t['aud'],
                 'isMRRT': True,
                 'accessToken': tokens[decoded_tokens.index(t)],
@@ -209,8 +209,7 @@ class Profile(object):
 
         return deepcopy(consolidated)
 
-    @staticmethod
-    def _normalize_properties(user, subscriptions, is_service_principal):
+    def _normalize_properties(self, user, subscriptions, is_service_principal):
         consolidated = []
         for s in subscriptions:
             consolidated.append({
@@ -227,8 +226,7 @@ class Profile(object):
             })
         return consolidated
 
-    @staticmethod
-    def _build_tenant_level_accounts(tenants):
+    def _build_tenant_level_accounts(self, tenants):
         from azure.cli.core.profiles import ResourceType
         SubscriptionType = cli_ctx.cloud.get_sdk(ResourceType.MGMT_RESOURCE_SUBSCRIPTIONS,
                                                  'Subscription', mod='models')
@@ -236,7 +234,7 @@ class Profile(object):
                                           'SubscriptionState', mod='models')
         result = []
         for t in tenants:
-            s = Profile._new_account()
+            s = self._new_account()
             s.id = '/subscriptions/' + t
             s.subscription = t
             s.tenant_id = t
@@ -244,11 +242,10 @@ class Profile(object):
             result.append(s)
         return result
 
-    @staticmethod
-    def _new_account():
-        from azure.cli.core.profiles import get_sdk, ResourceType
-        SubscriptionType, StateType = get_sdk(ResourceType.MGMT_RESOURCE_SUBSCRIPTIONS,
-                                              'Subscription', 'SubscriptionState', mod='models')
+    def _new_account(self):
+        from azure.cli.core.profiles import ResourceType
+        SubscriptionType, StateType = self.ctx.cloud.get_sdk(ResourceType.MGMT_RESOURCE_SUBSCRIPTIONS, 'Subscription',
+                                                             'SubscriptionState', mod='models')
         s = SubscriptionType()
         s.state = StateType.enabled
         return s
@@ -258,12 +255,12 @@ class Profile(object):
         if subscription_id is None:
             return None
         logger.info('MSI: environment was detected. Now trying to initialize a local account...')
-        tenant_id = Profile.get_msi_tenant_id(CLOUD.endpoints.resource_manager, subscription_id)
-        s = Profile._new_account()
+        tenant_id = Profile.get_msi_tenant_id(self.ctx.cloud.endpoints.resource_manager, subscription_id)
+        s = self._new_account()
         s.id = '/subscriptions/' + subscription_id
         s.tenant_id = tenant_id
         s.display_name = _MSI_ACCOUNT_NAME
-        consolidated = Profile._normalize_properties(user, [s], False)
+        consolidated = self._normalize_properties(user, [s], False)
         self._set_subscriptions(consolidated)
         # use deepcopy as we don't want to persist these changes to file.
         return deepcopy(consolidated)
@@ -386,7 +383,8 @@ class Profile(object):
         def _retrieve_token():
             if account[_SUBSCRIPTION_NAME] == _MSI_ACCOUNT_NAME:
                 port, _ = Profile.split_msi_user_info(username_or_sp_id)
-                return Profile.get_msi_token(resource, CLOUD.endpoints.active_directory, account[_TENANT_ID], port)
+                return Profile.get_msi_token(
+                    resource, self.ctx.cloud.endpoints.active_directory, account[_TENANT_ID], port)
             elif user_type == _USER:
                 return self._creds_cache.retrieve_token_for_user(username_or_sp_id,
                                                                  account[_TENANT_ID], resource)
